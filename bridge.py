@@ -110,7 +110,6 @@ def load_config():
     """Load configuration from file."""
     config_path = get_config_path()
     default_config = {
-        'start_minimized': False,
         'run_at_startup': False
     }
     try:
@@ -171,8 +170,7 @@ def set_startup_enabled(enabled):
         try:
             if enabled:
                 exe_path = get_exe_path()
-                # Add --minimized flag for startup
-                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}" --minimized')
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
             else:
                 try:
                     winreg.DeleteValue(key, APP_NAME)
