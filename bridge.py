@@ -256,23 +256,32 @@ def osc_to_q(osc):
     """Convert OSC (0.0-1.0) to Q (0.4-9.9)."""
     return 0.4 + osc * 9.5
 
-def osc_to_filter_type(osc, freq_hz=1000):
+def osc_to_filter_type(osc, band, eq_type='req'):
     """Convert OSC type value to Squig filter type string.
 
     TotalMix only has Bell (0.0) and Shelf (0.333).
-    For Shelf, we determine low/high based on frequency.
+    Shelf type is determined by band position:
+    - REQ band 1: Low Shelf
+    - REQ bands 8,9: High Shelf
+    - PEQ band 1: Low Shelf
+    - PEQ band 3: High Shelf
     """
-    if osc is None:
-        return 'PK'
-    if osc < 0.2:
-        return 'PK'      # Bell/Peak
-    else:
-        # Shelf - determine low/high based on frequency
-        # Below ~500Hz is typically low shelf, above is high shelf
-        if freq_hz < 500:
-            return 'LSQ'  # Low Shelf
-        else:
-            return 'HSQ'  # High Shelf
+    if osc is None or osc < 0.2:
+        return 'PK'  # Bell/Peak
+
+    # Shelf - determine low/high based on band position
+    if eq_type == 'req':
+        if band == 1:
+            return 'LSQ'
+        elif band in (8, 9):
+            return 'HSQ'
+    elif eq_type == 'peq':
+        if band == 1:
+            return 'LSQ'
+        elif band == 3:
+            return 'HSQ'
+
+    return 'PK'  # Fallback (shouldn't happen)
 
 def filter_type_to_osc(ftype):
     """Convert Squig filter type to OSC value.
@@ -377,7 +386,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     gain_db = osc_to_gain(gain)
                     if abs(gain_db) > 0.1:  # Skip zero-gain bands
                         filters.append({
-                            'type': osc_to_filter_type(ftype, freq_hz),
+                            'type': osc_to_filter_type(ftype, i, 'req'),
                             'freq': round(freq_hz),
                             'gain': round(gain_db, 1),
                             'q': round(osc_to_q(q), 2)
@@ -403,7 +412,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     gain_db = osc_to_gain(gain)
                     if abs(gain_db) > 0.1:
                         filters.append({
-                            'type': osc_to_filter_type(ftype, freq_hz),
+                            'type': osc_to_filter_type(ftype, i, 'peq'),
                             'freq': round(freq_hz),
                             'gain': round(gain_db, 1),
                             'q': round(osc_to_q(q), 2)
@@ -460,9 +469,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     osc_client.send_message(f'/4/reqGain{i}', 0.5)
                 time.sleep(0.01)
 
-            # Enable Room EQ
-            osc_client.send_message('/4/reqEnable', 1.0)
-
             # Send PEQ if overflow
             if peq:
                 osc_client.send_message('/2/busOutput', 1.0)
@@ -482,8 +488,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     else:
                         osc_client.send_message(f'/2/eqGain{i}', 0.5)
                     time.sleep(0.01)
-
-                osc_client.send_message('/2/eqEnable', 1.0)
 
             self.send_json({
                 'success': True,
