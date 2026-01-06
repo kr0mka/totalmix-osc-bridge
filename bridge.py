@@ -469,15 +469,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     osc_client.send_message(f'/4/reqGain{i}', 0.5)
                 time.sleep(0.01)
 
-            # Send PEQ if overflow
-            if peq:
-                osc_client.send_message('/2/busOutput', 1.0)
-                time.sleep(0.03)
-                osc_client.send_message('/setBankStart', float(bank * 8))
-                time.sleep(0.03)
-                osc_client.send_message('/setOffsetInBank', float(offset))
-                time.sleep(0.05)
+            # Enable Room EQ only if not already enabled
+            time.sleep(0.05)
+            with cache_lock:
+                req_enabled = osc_cache.get('/4/reqEnable', 0.0)
+            if req_enabled < 0.5:
+                osc_client.send_message('/4/reqEnable', 1.0)
 
+            # Handle PEQ
+            osc_client.send_message('/2/busOutput', 1.0)
+            time.sleep(0.03)
+            osc_client.send_message('/setBankStart', float(bank * 8))
+            time.sleep(0.03)
+            osc_client.send_message('/setOffsetInBank', float(offset))
+            time.sleep(0.05)
+
+            # Check if PEQ has any actual filters (non-zero gain)
+            peq_has_filters = any(abs(f.get('gain', 0)) > 0.1 for f in peq)
+
+            if peq_has_filters:
+                # Send PEQ bands
                 for i in range(1, 4):
                     if i <= len(peq):
                         f = peq[i - 1]
@@ -489,10 +500,33 @@ class BridgeHandler(BaseHTTPRequestHandler):
                         osc_client.send_message(f'/2/eqGain{i}', 0.5)
                     time.sleep(0.01)
 
+                # Enable PEQ only if not already enabled
+                time.sleep(0.05)
+                with cache_lock:
+                    peq_enabled = osc_cache.get('/2/eqEnable', 0.0)
+                if peq_enabled < 0.5:
+                    osc_client.send_message('/2/eqEnable', 1.0)
+            else:
+                # No PEQ overflow - clear and disable PEQ
+                for i in range(1, 4):
+                    osc_client.send_message(f'/2/eqGain{i}', 0.5)
+                    time.sleep(0.01)
+
+                # Disable PEQ only if currently enabled (send 1.0 to toggle off)
+                time.sleep(0.05)
+                with cache_lock:
+                    peq_enabled = osc_cache.get('/2/eqEnable', 0.0)
+                if peq_enabled >= 0.5:
+                    osc_client.send_message('/2/eqEnable', 1.0)
+
+            # Count actual filters (non-zero gain)
+            room_eq_count = sum(1 for f in room_eq if abs(f.get('gain', 0)) > 0.1)
+            peq_count = sum(1 for f in peq if abs(f.get('gain', 0)) > 0.1)
+
             self.send_json({
                 'success': True,
-                'roomEQ': len(room_eq),
-                'peq': len(peq)
+                'roomEQ': room_eq_count,
+                'peq': peq_count
             })
 
         else:
