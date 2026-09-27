@@ -76,7 +76,7 @@ def open_log_file():
 
 # App info
 APP_NAME = "TotalMix OSC Bridge"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.3"
 
 # Default configuration (uses Remote Controller 3 to avoid conflict with StreamDock)
 DEFAULT_HTTP_PORT = 8765
