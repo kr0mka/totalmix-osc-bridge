@@ -53,6 +53,12 @@ Logs are stored at: `%APPDATA%\TotalMixOSCBridge\bridge.log`
 
 ### Example: Read EQ
 
+Reads include non-zero bands only from sections enabled in TotalMix: Room EQ,
+parametric EQ, or both. When both sections are disabled, `filters` is empty.
+The read waits up to one second per section for fresh OSC feedback and returns
+HTTP 504 if the enable state or enabled section's band data is missing. Reading
+does not toggle either EQ section. Existing Squig clients need no update.
+
 ```bash
 curl http://127.0.0.1:8765/api/channel/1/eq
 ```

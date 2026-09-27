@@ -76,7 +76,7 @@ def open_log_file():
 
 # App info
 APP_NAME = "TotalMix OSC Bridge"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # Default configuration (uses Remote Controller 3 to avoid conflict with StreamDock)
 DEFAULT_HTTP_PORT = 8765
@@ -295,6 +295,54 @@ def filter_type_to_osc(ftype):
         return 0.0  # Bell/Peak (also for HP, LP which aren't supported)
 
 
+def read_enabled_eq(channel, page, prefix, bands):
+    """Read fresh feedback for one EQ section; never treat missing state as off."""
+    osc_client.send_message(f'/{page}/busOutput', 1.0)
+    time.sleep(0.03)
+    osc_client.send_message('/setBankStart', float((channel - 1) // 8 * 8))
+    time.sleep(0.03)
+    enable_address = f'/{page}/{prefix}Enable'
+    type_bands = (1, 8, 9) if page == 4 else (1, 3)
+    addresses = [f'/{page}/{prefix}{field}{i}'
+                 for i in range(1, bands + 1)
+                 for field in ('Freq', 'Gain', 'Q')]
+    # Fixed bell bands do not have a Type control or send Type feedback.
+    addresses += [f'/{page}/{prefix}Type{i}' for i in type_bands]
+    # Discard the previous channel's feedback before requesting this channel.
+    with cache_lock:
+        for address in [enable_address, *addresses]:
+            osc_cache.pop(address, None)
+    osc_client.send_message('/setOffsetInBank', float((channel - 1) % 8))
+    deadline = time.monotonic() + 1.0
+    # Bus/bank selection also produces feedback. Let those responses settle
+    # before accepting an enable value for the final channel selection.
+    time.sleep(0.15)
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        with cache_lock:
+            enabled = osc_cache.get(enable_address)
+            if enabled is not None and enabled < 0.5:
+                return []
+            if enabled is not None and all(a in osc_cache for a in addresses):
+                snapshot = {a: osc_cache[a] for a in addresses}
+                break
+    else:
+        raise TimeoutError(f'TotalMix did not return fresh {prefix} state; retry Read')
+
+    filters = []
+    for i in range(1, bands + 1):
+        gain_db = osc_to_gain(snapshot[f'/{page}/{prefix}Gain{i}'])
+        if abs(gain_db) > 0.1:
+            filters.append({
+                'type': osc_to_filter_type(snapshot.get(f'/{page}/{prefix}Type{i}', 0.0),
+                                           i, 'req' if page == 4 else 'peq'),
+                'freq': round(osc_to_freq(snapshot[f'/{page}/{prefix}Freq{i}'])),
+                'gain': round(gain_db, 1),
+                'q': round(osc_to_q(snapshot[f'/{page}/{prefix}Q{i}']), 2)
+            })
+    return filters
+
+
 class BridgeHandler(BaseHTTPRequestHandler):
     """HTTP request handler."""
 
@@ -363,60 +411,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.send_json({'error': 'Invalid channel'}, 400)
                 return
 
-            # Select channel on Page 4 (Room EQ)
-            osc_client.send_message('/4/busOutput', 1.0)
-            time.sleep(0.03)
-            bank = (channel - 1) // 8
-            offset = (channel - 1) % 8
-            osc_client.send_message('/setBankStart', float(bank * 8))
-            time.sleep(0.03)
-            osc_client.send_message('/setOffsetInBank', float(offset))
-            time.sleep(0.15)  # Wait for TotalMix to send state
-
-            # Read Room EQ (9 bands)
-            filters = []
-            with cache_lock:
-                for i in range(1, 10):
-                    freq_osc = osc_cache.get(f'/4/reqFreq{i}', 0.5)
-                    gain = osc_cache.get(f'/4/reqGain{i}', 0.5)
-                    q = osc_cache.get(f'/4/reqQ{i}', 0.5)
-                    ftype = osc_cache.get(f'/4/reqType{i}', 0.0)
-
-                    freq_hz = osc_to_freq(freq_osc)
-                    gain_db = osc_to_gain(gain)
-                    if abs(gain_db) > 0.1:  # Skip zero-gain bands
-                        filters.append({
-                            'type': osc_to_filter_type(ftype, i, 'req'),
-                            'freq': round(freq_hz),
-                            'gain': round(gain_db, 1),
-                            'q': round(osc_to_q(q), 2)
-                        })
-
-            # Select channel on Page 2 (PEQ)
-            osc_client.send_message('/2/busOutput', 1.0)
-            time.sleep(0.03)
-            osc_client.send_message('/setBankStart', float(bank * 8))
-            time.sleep(0.03)
-            osc_client.send_message('/setOffsetInBank', float(offset))
-            time.sleep(0.15)
-
-            # Read PEQ (3 bands)
-            with cache_lock:
-                for i in range(1, 4):
-                    freq_osc = osc_cache.get(f'/2/eqFreq{i}', 0.5)
-                    gain = osc_cache.get(f'/2/eqGain{i}', 0.5)
-                    q = osc_cache.get(f'/2/eqQ{i}', 0.5)
-                    ftype = osc_cache.get(f'/2/eqType{i}', 0.0)
-
-                    freq_hz = osc_to_freq(freq_osc)
-                    gain_db = osc_to_gain(gain)
-                    if abs(gain_db) > 0.1:
-                        filters.append({
-                            'type': osc_to_filter_type(ftype, i, 'peq'),
-                            'freq': round(freq_hz),
-                            'gain': round(gain_db, 1),
-                            'q': round(osc_to_q(q), 2)
-                        })
+            if channel < 1:
+                self.send_json({'error': 'Invalid channel'}, 400)
+                return
+            try:
+                filters = read_enabled_eq(channel, 4, 'req', 9)
+                filters += read_enabled_eq(channel, 2, 'eq', 3)
+            except TimeoutError as error:
+                self.send_json({'error': str(error)}, 504)
+                return
 
             self.send_json({'filters': filters})
 
